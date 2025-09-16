@@ -6,7 +6,9 @@ import pickle
 import numpy as np
 
 # Load API key and files
-pi_key = st.secrets["GOOGLE_API_KEY"]
+api_key = st.secrets["GOOGLE_API_KEY"]
+genai.configure(api_key=api_key)
+model = genai.GenerativeModel('gemini-1.5-flash')  # Free tier, fast
 
 # Load your processed data
 with open('chunks.pkl', 'rb') as f:
@@ -14,11 +16,11 @@ with open('chunks.pkl', 'rb') as f:
 index = faiss.read_index('index.faiss')
 embed_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-st.title("🪄 Axis Guidelines AI Assistant")
+st.title("🚀 Company Guidelines AI Assistant")
 st.write("Ask questions about our policies—powered by your PDFs!")
 
 # User input
-query = st.text_input("Your question:", placeholder="e.g., What's the remote work policy?")
+query = st.text_input("Your question:", placeholder="e.g., What's the content design principles?")
 
 if query:
     # Search for relevant chunks
