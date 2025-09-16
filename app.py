@@ -6,10 +6,7 @@ import pickle
 import numpy as np
 
 # Load API key and files
-with open('api_key.txt', 'r') as f:
-    api_key = f.read().strip()
-genai.configure(api_key=api_key)
-model = genai.GenerativeModel('gemini-1.5-flash')  # Free tier, fast
+pi_key = st.secrets["GOOGLE_API_KEY"]
 
 # Load your processed data
 with open('chunks.pkl', 'rb') as f:
