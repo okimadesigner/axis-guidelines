@@ -176,11 +176,14 @@ st.markdown("Ask about our company guidelines and get instant, accurate answers 
 if 'query' not in st.session_state:
     st.session_state.query = ""
 
+# Hidden input to sync session state (avoids race condition)
+st.text_input("Hidden Query Sync", key="hidden_query", value=st.session_state.query, on_change=lambda: None)
+
 # Custom clearable input with submit button
 st.markdown("""
 <div class="input-container">
     <input type="text" class="clearable-input" id="query-input" placeholder="e.g., What are the content design principles?" value="{0}">
-    <button class="clear-button" onclick="document.getElementById('query-input').value='';Streamlit.setComponentValue('')">✕</button>
+    <button class="clear-button" onclick="document.getElementById('query-input').value='';Streamlit.setComponentValue(document.getElementById('query-input').value);document.getElementById('hidden_query').dispatchEvent(new Event('change'))">✕</button>
     <button class="custom-button" onclick="Streamlit.setComponentValue(document.getElementById('query-input').value);Streamlit.setTrigger('submit')">
         <span class="circle1"></span>
         <span class="circle2"></span>
@@ -193,6 +196,8 @@ st.markdown("""
 <script>
 document.getElementById('query-input').addEventListener('input', function(e) {
     Streamlit.setComponentValue(e.target.value);
+    document.getElementById('hidden_query').value = e.target.value;
+    document.getElementById('hidden_query').dispatchEvent(new Event('change'));
 });
 </script>
 """.format(st.session_state.query), unsafe_allow_html=True)
