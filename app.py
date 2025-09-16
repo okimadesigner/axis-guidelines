@@ -530,41 +530,39 @@ query = st.text_input(
 # The beautiful animated button (keeping original design but with proper Python logic)
 button_clicked = False
 
-# Using columns to position the button nicely
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    st.markdown("""
-    <div class="button-container">
-    <button type="button" class="button" onclick="
-        const input = window.parent.document.querySelector('[data-testid=\\'stTextInput\\'] input');
-        if (input && input.value.trim()) {
-            // Trigger a form submission by dispatching Enter key event
-            const event = new KeyboardEvent('keydown', {key: 'Enter', keyCode: 13, bubbles: true});
-            input.dispatchEvent(event);
-        }
-    ">
-      <span class="fold"></span>
-      <div class="points_wrapper">
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-      </div>
-      <span class="inner">
-        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5">
-          <polyline points="13.18 1.37 13.18 9.64 21.45 9.64 10.82 22.63 10.82 14.36 2.55 14.36 13.18 1.37"></polyline>
-        </svg>
-        Get Answer
-      </span>
-    </button>
-    </div>
-    """, unsafe_allow_html=True)
+# Center the button without columns
+st.markdown("""
+<div style="display: flex; justify-content: left; margin: 20px 0;">
+<button type="button" class="button" onclick="
+    const input = window.parent.document.querySelector('[data-testid=\\'stTextInput\\'] input');
+    if (input && input.value.trim()) {
+        // Trigger a form submission by dispatching Enter key event
+        const event = new KeyboardEvent('keydown', {key: 'Enter', keyCode: 13, bubbles: true});
+        input.dispatchEvent(event);
+    }
+">
+  <span class="fold"></span>
+  <div class="points_wrapper">
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+  </div>
+  <span class="inner">
+    <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5">
+      <polyline points="13.18 1.37 13.18 9.64 21.45 9.64 10.82 22.63 10.82 14.36 2.55 14.36 13.18 1.37"></polyline>
+    </svg>
+    Get Answer
+  </span>
+</button>
+</div>
+""", unsafe_allow_html=True)
 
 # Process the query when there's input and it's different from previous
 if query and query != st.session_state.get('last_query', ''):
