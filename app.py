@@ -140,19 +140,10 @@ Instructions:
         # Manage memory
         manage_cache_size()
 
-        # Display results with the original beautiful structure
+        # Display results with combined container structure
         st.markdown("""
-        <div class="answer-title">
-            <h3 style="margin: 0; display: inline;">✅ Answer</h3>
-            <span style="cursor: help; color: #6b7280;" title="AI-powered response from your guidelines">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
-                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                </svg>
-            </span>
-        </div>
-        <div class="answer-content">
+        <div class="answer-container">
+            <h3 style="margin: 0 0 15px 0; display: block;">✅ Answer</h3>
             """ + response.text + """
         </div>
         """, unsafe_allow_html=True)
@@ -478,24 +469,7 @@ div[data-testid="stSpinner"] {
     margin-bottom: 20px;
 }
 
-.answer-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 0;
-    padding: 10px;
-    background-color: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px 8px 0 0;
-}
 
-.answer-content {
-    padding: 20px;
-    background-color: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-top: none;
-    border-radius: 0 0 8px 8px;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -530,7 +504,7 @@ query = st.text_input(
 # The beautiful animated button (keeping original design but with proper Python logic)
 button_clicked = False
 
-# Center the button without columns
+# Left the button without columns
 st.markdown("""
 <button type="button" class="button" onclick="
     const input = window.parent.document.querySelector('[data-testid=\\'stTextInput\\'] input');
@@ -563,6 +537,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Process the query when there's input and it's different from previous
+st.markdown("---")
 if query and query != st.session_state.get('last_query', ''):
     with st.spinner("Searching guidelines..."):
         process_query(query)
