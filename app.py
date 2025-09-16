@@ -15,17 +15,30 @@ if 'history' not in st.session_state:
     st.session_state.history = []
 if 'last_query' not in st.session_state:
     st.session_state.last_query = ""
+if 'embedding_cache' not in st.session_state:
+    st.session_state.embedding_cache = {}
 
 # Load API key from Streamlit secrets
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-1.5-flash')  # Free tier, fast
 
-# Load processed data
-with open('chunks.pkl', 'rb') as f:
-    chunks = pickle.load(f)
-index = faiss.read_index('index.faiss')
-embed_model = SentenceTransformer('all-MiniLM-L6-v2')
+# Cache data loading to avoid reloading on every app run
+@st.cache_resource
+def load_processed_data():
+    with open('chunks.pkl', 'rb') as f:
+        chunks = pickle.load(f)
+    index = faiss.read_index('index.faiss')
+    return chunks, index
+
+chunks, index = load_processed_data()
+
+# Cache the embedding model to avoid reloading
+@st.cache_resource
+def load_embedding_model():
+    return SentenceTransformer('all-MiniLM-L6-v2')
+
+embed_model = load_embedding_model()
 
 # Custom CSS with new Uiverse button styling
 st.markdown("""
@@ -404,33 +417,51 @@ function submitQuery() {
 if query and query != st.session_state.get('last_query', ''):
     with st.spinner("Searching guidelines..."):
         try:
-            # Search for relevant chunks
-            query_emb = embed_model.encode([query])
+            # Check cache for embedding, generate if not found
+            if query not in st.session_state.embedding_cache:
+                query_emb = embed_model.encode([query])
+                st.session_state.embedding_cache[query] = query_emb[0]
+            else:
+                query_emb = np.array([st.session_state.embedding_cache[query]])
+
             faiss.normalize_L2(query_emb)
             D, I = index.search(query_emb.astype('float32'), k=3)  # Top 3 chunks
             context = "\n\n".join([chunks[i] for i in I[0]])
-            
+
             # Ask Gemini (temperature=0 for consistent answers)
             prompt = f"Answer based ONLY on this context from our guidelines:\n\n{context}\n\nQuestion: {query}\n\nGive a clear, concise answer."
             response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(temperature=0))
-            
+
             # Save to history and update last query
             st.session_state.history.append((query, response.text))
             st.session_state.last_query = query
-            
-            # Display results with full width container
-            st.markdown('<div class="answer-container" style="width: 100%;">', unsafe_allow_html=True)
-            st.markdown('<h3 style="display: inline;">✅ Answer</h3><span style="margin-left: 8px;" class="stHelpText">❓</span>', unsafe_allow_html=True)
-            st.markdown(response.text, help="This answer is generated from your PDFs.")
+
+            # Display results
+            st.markdown("""
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                <h3 style="margin: 0; display: inline;">✅ Answer</h3>
+                <span style="cursor: help; color: #6b7280;" title="This answer is generated from your PDFs">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                    </svg>
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Full width answer container
+            st.markdown('<div class="answer-container">', unsafe_allow_html=True)
+            st.markdown(response.text)
             st.markdown('</div>', unsafe_allow_html=True)
-            
+
             st.subheader("📚 Sources")
             for i, chunk_idx in enumerate(I[0], 1):
                 with st.expander(f"Source {i}"):
                     st.markdown(chunks[chunk_idx])
-            
+
             st.markdown("---")
-            
+
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
             st.info("Please check that your API key is configured correctly and the data files exist.")
