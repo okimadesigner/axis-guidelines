@@ -172,10 +172,11 @@ with st.sidebar:
 st.title("📄 Axis Guidelines AI Assistant")
 st.markdown("Ask about our company guidelines and get instant, accurate answers from our PDFs.")
 
-# Custom clearable input with submit button
+# Initialize session state for query
 if 'query' not in st.session_state:
     st.session_state.query = ""
 
+# Custom clearable input with submit button
 st.markdown("""
 <div class="input-container">
     <input type="text" class="clearable-input" id="query-input" placeholder="e.g., What are the content design principles?" value="{0}">
