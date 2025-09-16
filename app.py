@@ -319,6 +319,13 @@ h1, h2, h3 {
     margin-bottom: 10px;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
+
+/* Consistent spinner spacing */
+div[data-testid="stSpinner"] {
+    margin: 20px 0;
+    text-align: center;
+    width: 100%;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -412,8 +419,8 @@ if query and query != st.session_state.get('last_query', ''):
             st.session_state.last_query = query
             
             # Display results with full width container
-            st.markdown('<div class="answer-container">', unsafe_allow_html=True)
-            st.subheader("✅ Answer")
+            st.markdown('<div class="answer-container" style="width: 100%;">', unsafe_allow_html=True)
+            st.markdown('<h3 style="display: inline;">✅ Answer</h3><span style="margin-left: 8px;" class="stHelpText">❓</span>', unsafe_allow_html=True)
             st.markdown(response.text, help="This answer is generated from your PDFs.")
             st.markdown('</div>', unsafe_allow_html=True)
             
