@@ -16,7 +16,7 @@ with open('chunks.pkl', 'rb') as f:
 index = faiss.read_index('index.faiss')
 embed_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-st.title("🚀 Company Guidelines AI Assistant")
+st.title("🪄 Axis Guidelines AI Assistant")
 st.write("Ask questions about our policies—powered by your PDFs!")
 
 # User input
