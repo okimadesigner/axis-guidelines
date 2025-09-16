@@ -41,7 +41,7 @@ faiss.write_index(index, 'index.faiss')
 print(f"Processed {len(chunks)} chunks from your PDFs! Saved to files.")
 
 # Quick test: Search for a sample query
-query = "What are the vacation policy rules?"  # Change this to test
+query = "What are the content design principles?"  # Change this to test
 query_emb = model.encode([query])
 faiss.normalize_L2(query_emb)
 D, I = index.search(query_emb.astype('float32'), k=3)  # Top 3 matches
