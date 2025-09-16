@@ -19,7 +19,7 @@ with open('chunks.pkl', 'rb') as f:
 index = faiss.read_index('index.faiss')
 embed_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-# Custom CSS inspired by shadcn/ui (Tailwind-like styling)
+# Custom CSS inspired by shadcn/ui with new button styling
 st.markdown("""
 <style>
 .stApp {
@@ -27,11 +27,14 @@ st.markdown("""
     font-family: 'Inter', sans-serif;
 }
 
-/* Container for custom input with clear button */
-.clearable-input-container {
+/* Container for input and button */
+.input-container {
     position: relative;
     width: 100%;
     max-width: 600px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
 
 /* Custom text input */
@@ -54,7 +57,7 @@ st.markdown("""
 /* Clear button (X icon) */
 .clear-button {
     position: absolute;
-    right: 10px;
+    right: 8px;
     top: 50%;
     transform: translateY(-50%);
     background-color: #e2e8f0;
@@ -65,26 +68,59 @@ st.markdown("""
     height: 24px;
     font-size: 14px;
     cursor: pointer;
-    display: flex;
+    display: none; /* Hidden by default */
     align-items: center;
     justify-content: center;
 }
-.clear-button:hover {
-    background-color: #d1d5db;
+.clearable-input:not(:placeholder-shown) ~ .clear-button {
+    display: flex; /* Show when input has text */
 }
 
-/* Submit button */
-.stButton > button {
-    background-color: #2563eb;
+/* Custom submit button (Uiverse.io style) */
+.custom-button {
+    font-family: Arial, Helvetica, sans-serif;
+    font-weight: bold;
     color: white;
-    border-radius: 8px;
-    padding: 8px 16px;
-    font-weight: 500;
+    background-color: #171717;
+    padding: 1em 2em;
     border: none;
-    transition: background-color 0.2s;
+    border-radius: 0.6rem;
+    position: relative;
+    cursor: pointer;
+    overflow: hidden;
 }
-.stButton > button:hover {
-    background-color: #1d4ed8;
+.custom-button span:not(:nth-child(6)) {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    height: 30px;
+    width: 30px;
+    background-color: #97144D;
+    border-radius: 50%;
+    transition: 0.6s ease;
+}
+.custom-button span:nth-child(6) {
+    position: relative;
+}
+.custom-button span:nth-child(1) {
+    transform: translate(-3.3em, -4em);
+}
+.custom-button span:nth-child(2) {
+    transform: translate(-6em, 1.3em);
+}
+.custom-button span:nth-child(3) {
+    transform: translate(-0.2em, 1.8em);
+}
+.custom-button span:nth-child(4) {
+    transform: translate(3.5em, 1.4em);
+}
+.custom-button span:nth-child(5) {
+    transform: translate(3.5em, -3.8em);
+}
+.custom-button:hover span:not(:nth-child(6)) {
+    transform: translate(-50%, -50%) scale(4);
+    transition: 1.5s ease;
 }
 
 /* Headings and text */
@@ -136,61 +172,63 @@ with st.sidebar:
 st.title("📄 Axis Guidelines AI Assistant")
 st.markdown("Ask about our company guidelines and get instant, accurate answers from our PDFs.")
 
-# Custom clearable input using HTML/JavaScript
+# Custom clearable input with submit button
 if 'query' not in st.session_state:
     st.session_state.query = ""
 
 st.markdown("""
-<div class="clearable-input-container">
+<div class="input-container">
     <input type="text" class="clearable-input" id="query-input" placeholder="e.g., What are the content design principles?" value="{0}">
     <button class="clear-button" onclick="document.getElementById('query-input').value='';Streamlit.setComponentValue('')">✕</button>
+    <button class="custom-button" onclick="Streamlit.setComponentValue(document.getElementById('query-input').value);Streamlit.setTrigger('submit')">
+        <span class="circle1"></span>
+        <span class="circle2"></span>
+        <span class="circle3"></span>
+        <span class="circle4"></span>
+        <span class="circle5"></span>
+        <span class="text">Get Answer</span>
+    </button>
 </div>
 <script>
-document.getElementById('query-input').addEventListener('input', function(e) {{
+document.getElementById('query-input').addEventListener('input', function(e) {
     Streamlit.setComponentValue(e.target.value);
-}});
+});
 </script>
 """.format(st.session_state.query), unsafe_allow_html=True)
 
-# Input form with submit button
+# Form to handle submit trigger
 with st.form(key="question_form"):
     query = st.session_state.query
-    submit_button = st.form_submit_button("Get Answer")
-
-# Initialize chat history
-if 'history' not in st.session_state:
-    st.session_state.history = []
-
-if submit_button and query:
-    with st.spinner("Searching guidelines..."):
-        # Search for relevant chunks
-        query_emb = embed_model.encode([query])
-        faiss.normalize_L2(query_emb)
-        D, I = index.search(query_emb.astype('float32'), k=3)  # Top 3 chunks
-        context = "\n\n".join([chunks[i] for i in I[0]])
-        
-        # Ask Gemini (temperature=0 for consistent answers)
-        prompt = f"Answer based ONLY on this context from our guidelines:\n\n{context}\n\nQuestion: {query}\n\nGive a clear, concise answer."
-        response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(temperature=0))
-        
-        # Save to history
-        st.session_state.history.append((query, response.text))
-        
-        # Clear the input
-        st.session_state.query = ""
-        
-        # Display results
-        st.subheader("Answer")
-        st.markdown(response.text, help="This answer is generated from your PDFs.")
-        
-        st.subheader("Sources")
-        for i in I[0]:
-            st.markdown(f"• {chunks[i][:150]}...")
-        
-        st.markdown("---")
+    if st.form_submit_button("Submit", on_click=None):  # Hidden trigger
+        with st.spinner("Searching guidelines..."):
+            # Search for relevant chunks
+            query_emb = embed_model.encode([query])
+            faiss.normalize_L2(query_emb)
+            D, I = index.search(query_emb.astype('float32'), k=3)  # Top 3 chunks
+            context = "\n\n".join([chunks[i] for i in I[0]])
+            
+            # Ask Gemini (temperature=0 for consistent answers)
+            prompt = f"Answer based ONLY on this context from our guidelines:\n\n{context}\n\nQuestion: {query}\n\nGive a clear, concise answer."
+            response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(temperature=0))
+            
+            # Save to history
+            st.session_state.history.append((query, response.text))
+            
+            # Clear the input
+            st.session_state.query = ""
+            
+            # Display results
+            st.subheader("Answer")
+            st.markdown(response.text, help="This answer is generated from your PDFs.")
+            
+            st.subheader("Sources")
+            for i in I[0]:
+                st.markdown(f"• {chunks[i][:150]}...")
+            
+            st.markdown("---")
 
 # Display chat history
-if st.session_state.history:
+if 'history' in st.session_state and st.session_state.history:
     st.subheader("Recent Questions")
     for q, a in st.session_state.history[-3:]:  # Show last 3
         st.markdown(f"**Question:** {q}\n\n**Answer:** {a}")
