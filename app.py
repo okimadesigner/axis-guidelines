@@ -532,7 +532,6 @@ button_clicked = False
 
 # Center the button without columns
 st.markdown("""
-<div style="display: flex; justify-content: left; margin: 20px 0;">
 <button type="button" class="button" onclick="
     const input = window.parent.document.querySelector('[data-testid=\\'stTextInput\\'] input');
     if (input && input.value.trim()) {
@@ -561,7 +560,6 @@ st.markdown("""
     Get Answer
   </span>
 </button>
-</div>
 """, unsafe_allow_html=True)
 
 # Process the query when there's input and it's different from previous
