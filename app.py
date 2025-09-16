@@ -5,462 +5,589 @@ import faiss
 import pickle
 import numpy as np
 import logging
-from pathlib import Path
 from typing import List, Tuple, Optional
-import time
-from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Configuration
-CONFIG = {
-    'MAX_HISTORY_SIZE': 10,
-    'MAX_CACHE_SIZE': 100,
-    'EMBEDDING_MODEL': 'all-MiniLM-L6-v2',
-    'GEMINI_MODEL': 'gemini-1.5-flash',
-    'MAX_QUERY_LENGTH': 500,
-    'TOP_K_RESULTS': 3,
-    'TEMPERATURE': 0.0,
+# Set page config for a modern, wide layout
+st.set_page_config(page_title="Axis Guidelines AI", page_icon="📄", layout="wide")
+
+# Initialize session state variables FIRST
+if 'query' not in st.session_state:
+    st.session_state.query = ""
+if 'history' not in st.session_state:
+    st.session_state.history = []
+if 'last_query' not in st.session_state:
+    st.session_state.last_query = ""
+if 'embedding_cache' not in st.session_state:
+    st.session_state.embedding_cache = {}
+if 'processing' not in st.session_state:
+    st.session_state.processing = False
+
+# Load API key from Streamlit secrets with validation
+try:
+    api_key = st.secrets["GOOGLE_API_KEY"]
+    if not api_key:
+        raise ValueError("API key is empty")
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+except KeyError:
+    st.error("❌ GOOGLE_API_KEY not found in secrets. Please configure your API key.")
+    st.stop()
+except Exception as e:
+    st.error(f"❌ Failed to configure Gemini API: {str(e)}")
+    st.stop()
+
+# Cache data loading to avoid reloading on every app run
+@st.cache_resource
+def load_processed_data():
+    try:
+        with open('chunks.pkl', 'rb') as f:
+            chunks = pickle.load(f)
+        index = faiss.read_index('index.faiss')
+        logger.info(f"Successfully loaded {len(chunks)} chunks")
+        return chunks, index
+    except FileNotFoundError as e:
+        st.error("❌ Required data files (chunks.pkl, index.faiss) not found. Please run the processor first.")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Failed to load data: {str(e)}")
+        st.stop()
+
+chunks, index = load_processed_data()
+
+# Cache the embedding model to avoid reloading
+@st.cache_resource
+def load_embedding_model():
+    try:
+        return SentenceTransformer('all-MiniLM-L6-v2')
+    except Exception as e:
+        st.error(f"❌ Failed to load embedding model: {str(e)}")
+        st.stop()
+
+embed_model = load_embedding_model()
+
+def manage_cache_size():
+    """Prevent memory issues by limiting cache sizes."""
+    # Limit embedding cache to 100 entries
+    if len(st.session_state.embedding_cache) > 100:
+        # Keep only the last 50 entries
+        items = list(st.session_state.embedding_cache.items())[-50:]
+        st.session_state.embedding_cache = dict(items)
+    
+    # Limit history to 10 entries
+    if len(st.session_state.history) > 10:
+        st.session_state.history = st.session_state.history[-10:]
+
+def validate_query(query: str) -> bool:
+    """Validate user input."""
+    if not query or not query.strip():
+        return False
+    if len(query) > 500:
+        st.error("Query too long. Please keep it under 500 characters.")
+        return False
+    return True
+
+def process_query(query: str) -> bool:
+    """Process user query with proper error handling."""
+    if not validate_query(query):
+        return False
+    
+    if query == st.session_state.last_query:
+        return False  # Don't reprocess same query
+    
+    if st.session_state.processing:
+        return False  # Prevent concurrent processing
+    
+    st.session_state.processing = True
+    
+    try:
+        # Check cache for embedding, generate if not found
+        if query not in st.session_state.embedding_cache:
+            query_emb = embed_model.encode([query])
+            st.session_state.embedding_cache[query] = query_emb[0]
+        else:
+            query_emb = np.array([st.session_state.embedding_cache[query]])
+
+        faiss.normalize_L2(query_emb)
+        D, I = index.search(query_emb.astype('float32'), k=3)  # Top 3 chunks
+        context = "\n\n".join([chunks[i] for i in I[0]])
+
+        # Ask Gemini with better prompt
+        prompt = f"""Answer based ONLY on this context from our guidelines:
+
+{context}
+
+Question: {query}
+
+Instructions:
+- Give a clear, concise answer
+- Only use information from the provided context
+- If the context doesn't contain relevant information, say so clearly
+- Be specific and actionable when possible"""
+
+        response = model.generate_content(
+            prompt, 
+            generation_config=genai.types.GenerationConfig(temperature=0)
+        )
+
+        # Save to history and update last query
+        st.session_state.history.append((query, response.text))
+        st.session_state.last_query = query
+        
+        # Manage memory
+        manage_cache_size()
+
+        # Display results with the original beautiful structure
+        st.markdown("""
+        <div class="answer-title">
+            <h3 style="margin: 0; display: inline;">✅ Answer</h3>
+            <span style="cursor: help; color: #6b7280;" title="AI-powered response from your guidelines">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                </svg>
+            </span>
+        </div>
+        <div class="answer-content">
+            """ + response.text + """
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.subheader("📚 Sources")
+        for i, chunk_idx in enumerate(I[0], 1):
+            with st.expander(f"Source {i}"):
+                st.markdown(chunks[chunk_idx])
+
+        st.markdown("---")
+        return True
+
+    except Exception as e:
+        logger.error(f"Query processing failed: {e}")
+        st.error(f"An error occurred: {str(e)}")
+        st.info("Please check that your API key is configured correctly and try again.")
+        return False
+    finally:
+        st.session_state.processing = False
+
+# Keep the AMAZING original CSS - this was beautiful!
+st.markdown("""
+<style>
+.stApp {
+    background-color: #f9fafb;
+    font-family: 'Inter', sans-serif;
 }
 
-class GuidelinesAI:
-    """Main application class for the Guidelines AI system."""
-    
-    def __init__(self):
-        self.chunks: Optional[List[str]] = None
-        self.index: Optional[faiss.Index] = None
-        self.embed_model: Optional[SentenceTransformer] = None
-        self.genai_model = None
-        
-    def initialize(self):
-        """Initialize all components with proper error handling."""
-        try:
-            self._setup_genai()
-            self._load_data()
-            self._setup_session_state()
-        except Exception as e:
-            logger.error(f"Initialization failed: {e}")
-            st.error("Failed to initialize the application. Please check the logs.")
-            st.stop()
-    
-    def _setup_genai(self):
-        """Configure Google Generative AI with validation."""
-        try:
-            api_key = st.secrets.get("GOOGLE_API_KEY")
-            if not api_key:
-                raise ValueError("GOOGLE_API_KEY not found in secrets")
-            
-            genai.configure(api_key=api_key)
-            self.genai_model = genai.GenerativeModel(CONFIG['GEMINI_MODEL'])
-            logger.info("Google Generative AI configured successfully")
-        except Exception as e:
-            logger.error(f"Failed to configure Generative AI: {e}")
-            raise
-    
-    @st.cache_resource
-    def _load_processed_data(_self):
-        """Load processed chunks and FAISS index with error handling."""
-        try:
-            chunks_path = Path('chunks.pkl')
-            index_path = Path('index.faiss')
-            
-            if not chunks_path.exists() or not index_path.exists():
-                raise FileNotFoundError("Required data files not found")
-            
-            with open(chunks_path, 'rb') as f:
-                chunks = pickle.load(f)
-            index = faiss.read_index(str(index_path))
-            
-            logger.info(f"Loaded {len(chunks)} chunks and FAISS index")
-            return chunks, index
-        except Exception as e:
-            logger.error(f"Failed to load processed data: {e}")
-            raise
-    
-    @st.cache_resource
-    def _load_embedding_model(_self):
-        """Load sentence transformer model with caching."""
-        try:
-            model = SentenceTransformer(CONFIG['EMBEDDING_MODEL'])
-            logger.info(f"Loaded embedding model: {CONFIG['EMBEDDING_MODEL']}")
-            return model
-        except Exception as e:
-            logger.error(f"Failed to load embedding model: {e}")
-            raise
-    
-    def _load_data(self):
-        """Load all required data."""
-        self.chunks, self.index = self._load_processed_data()
-        self.embed_model = self._load_embedding_model()
-    
-    def _setup_session_state(self):
-        """Initialize session state variables."""
-        defaults = {
-            'query': "",
-            'history': [],
-            'last_query': "",
-            'embedding_cache': {},
-            'last_query_time': 0,
-        }
-        
-        for key, default_value in defaults.items():
-            if key not in st.session_state:
-                st.session_state[key] = default_value
-    
-    def _validate_query(self, query: str) -> bool:
-        """Validate user query."""
-        if not query or not query.strip():
-            return False
-        if len(query) > CONFIG['MAX_QUERY_LENGTH']:
-            st.error(f"Query too long. Maximum {CONFIG['MAX_QUERY_LENGTH']} characters allowed.")
-            return False
-        return True
-    
-    def _manage_cache_size(self):
-        """Manage cache and history size to prevent memory issues."""
-        # Limit embedding cache size
-        if len(st.session_state.embedding_cache) > CONFIG['MAX_CACHE_SIZE']:
-            # Remove oldest entries (simple FIFO)
-            items = list(st.session_state.embedding_cache.items())
-            st.session_state.embedding_cache = dict(items[-CONFIG['MAX_CACHE_SIZE']//2:])
-        
-        # Limit history size
-        if len(st.session_state.history) > CONFIG['MAX_HISTORY_SIZE']:
-            st.session_state.history = st.session_state.history[-CONFIG['MAX_HISTORY_SIZE']:]
-    
-    def _get_embedding(self, query: str) -> np.ndarray:
-        """Get embedding for query with caching."""
-        if query not in st.session_state.embedding_cache:
-            embedding = self.embed_model.encode([query])[0]
-            st.session_state.embedding_cache[query] = embedding
-        
-        return np.array([st.session_state.embedding_cache[query]])
-    
-    def _search_similar_chunks(self, query_embedding: np.ndarray) -> Tuple[List[str], np.ndarray]:
-        """Search for similar chunks using FAISS."""
-        faiss.normalize_L2(query_embedding)
-        distances, indices = self.index.search(
-            query_embedding.astype('float32'), 
-            k=CONFIG['TOP_K_RESULTS']
-        )
-        
-        context_chunks = [self.chunks[i] for i in indices[0]]
-        return context_chunks, indices[0]
-    
-    def _generate_response(self, query: str, context: str) -> str:
-        """Generate response using Gemini."""
-        prompt = (
-            f"Answer based ONLY on this context from our guidelines:\n\n"
-            f"{context}\n\n"
-            f"Question: {query}\n\n"
-            f"Instructions:\n"
-            f"- Give a clear, concise answer\n"
-            f"- Only use information from the provided context\n"
-            f"- If the context doesn't contain relevant information, say so\n"
-            f"- Be specific and actionable when possible"
-        )
-        
-        try:
-            response = self.genai_model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=CONFIG['TEMPERATURE'],
-                    max_output_tokens=1000,
-                )
-            )
-            return response.text
-        except Exception as e:
-            logger.error(f"Failed to generate response: {e}")
-            raise
-    
-    def process_query(self, query: str) -> bool:
-        """Process user query and return success status."""
-        # Rate limiting (simple implementation)
-        current_time = time.time()
-        if current_time - st.session_state.last_query_time < 1.0:  # 1 second cooldown
-            st.warning("Please wait a moment before submitting another query.")
-            return False
-        
-        if not self._validate_query(query):
-            return False
-        
-        # Skip if same as last query
-        if query == st.session_state.last_query:
-            return False
-        
-        try:
-            with st.spinner("🔍 Searching guidelines..."):
-                # Get embedding and search
-                query_embedding = self._get_embedding(query)
-                context_chunks, chunk_indices = self._search_similar_chunks(query_embedding)
-                context = "\n\n".join(context_chunks)
-                
-                # Generate response
-                response = self._generate_response(query, context)
-                
-                # Update session state
-                st.session_state.history.append((query, response, chunk_indices))
-                st.session_state.last_query = query
-                st.session_state.last_query_time = current_time
-                
-                # Manage memory
-                self._manage_cache_size()
-                
-                # Display results
-                self._display_results(query, response, context_chunks, chunk_indices)
-                
-            return True
-            
-        except Exception as e:
-            logger.error(f"Query processing failed: {e}")
-            st.error("Sorry, something went wrong processing your query. Please try again.")
-            return False
-    
-    def _display_results(self, query: str, response: str, context_chunks: List[str], chunk_indices: np.ndarray):
-        """Display query results."""
-        # Main answer
-        st.markdown("### ✅ Answer")
-        with st.container():
-            st.markdown(f"**Question:** {query}")
-            st.markdown("**Answer:**")
-            st.markdown(response)
-        
-        # Sources
-        st.markdown("### 📚 Sources")
-        for i, (chunk, idx) in enumerate(zip(context_chunks, chunk_indices), 1):
-            with st.expander(f"Source {i} (Chunk {idx})"):
-                st.markdown(chunk)
-        
-        st.markdown("---")
-    
-    def render_sidebar(self):
-        """Render application sidebar."""
-        with st.sidebar:
-            st.header("📄 Axis Guidelines AI")
-            st.markdown("Your AI assistant for company guidelines and policies.")
-            
-            st.markdown("### 🚀 How to use")
-            st.markdown("""
-            1. Type your question in the search box
-            2. Click 'Get Answer' or press Enter
-            3. Review the answer and sources
-            """)
-            
-            st.markdown("### 💡 Example questions")
-            example_questions = [
-                "What are the content design principles?",
-                "How should headings be written?",
-                "What is the brand voice and tone?",
-                "What are the accessibility guidelines?"
-            ]
-            
-            for question in example_questions:
-                if st.button(f"💬 {question}", key=f"example_{hash(question)}"):
-                    st.session_state.query_input = question
-                    st.rerun()
-            
-            st.markdown("---")
-            st.markdown("**📞 Support:** subzero@freecharge.com")
-            
-            # Cache statistics (for debugging)
-            if st.checkbox("Show Debug Info"):
-                st.markdown("### 🔧 Debug Info")
-                st.write(f"Cache size: {len(st.session_state.embedding_cache)}")
-                st.write(f"History size: {len(st.session_state.history)}")
-                st.write(f"Chunks loaded: {len(self.chunks) if self.chunks else 0}")
-    
-    def render_history(self):
-        """Render query history."""
-        if not st.session_state.history:
-            return
-        
-        st.markdown("### 📝 Recent Questions")
-        
-        # Show most recent queries first
-        for i, (query, answer, _) in enumerate(reversed(st.session_state.history[-5:])):
-            with st.expander(f"Q: {query[:60]}{'...' if len(query) > 60 else ''}"):
-                st.markdown(f"**Question:** {query}")
-                st.markdown(f"**Answer:** {answer}")
-    
-    def render_help(self):
-        """Render help section."""
-        st.markdown("### ❓ Help & Tips")
-        with st.expander("Click here for help and tips"):
-            st.markdown("""
-            #### 🎯 **Getting Better Results**
-            - Be specific in your questions
-            - Use keywords from the guidelines
-            - Ask about policies, procedures, or standards
-            
-            #### 🔄 **Updating Content**
-            - Add/remove PDFs in the `test_pdfs` folder
-            - Run `processor.py` to reprocess documents  
-            - Deploy changes to update the app
-            
-            #### 📞 **Support**
-            - Technical issues: subzero@freecharge.com
-            - Missing content: Contact your team lead
-            - Feature requests: Create an issue in the repository
-            
-            #### 🚨 **Troubleshooting**
-            - If you get no results, try rephrasing your question
-            - For slow responses, wait a moment and try again
-            - Clear your browser cache if experiencing issues
-            """)
+/* Full width containers */
+.block-container {
+    max-width: 100%;
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+}
 
-def apply_custom_styles():
-    """Apply custom CSS styles."""
-    st.markdown("""
-    <style>
-    .stApp {
-        background-color: #f8fafc;
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-    
-    .block-container {
-        max-width: 1200px;
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-    
-    /* Input styling */
-    .stTextInput > div > div > input {
-        border-radius: 8px;
-        border: 2px solid #e2e8f0;
-        padding: 12px 16px;
-        font-size: 16px;
-        transition: all 0.2s ease;
-    }
-    
-    .stTextInput > div > div > input:focus {
-        border-color: #7c3aed !important;
-        box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1) !important;
-    }
-    
-    /* Button styling */
-    .stButton > button {
-        background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 12px 24px;
-        font-weight: 600;
-        font-size: 16px;
-        transition: all 0.2s ease;
-        box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(124, 58, 237, 0.4);
-        background: linear-gradient(135deg, #6d28d9 0%, #9333ea 100%);
-    }
-    
-    /* Expander styling */
-    .streamlit-expanderHeader {
-        background-color: #f1f5f9;
-        border-radius: 8px;
-        padding: 8px 16px;
-    }
-    
-    /* Container styling */
-    .element-container {
-        margin-bottom: 1rem;
-    }
-    
-    /* Sidebar styling */
-    .sidebar .sidebar-content {
-        background-color: #ffffff;
-        padding: 2rem 1rem;
-    }
-    
-    /* Success/error message styling */
-    .stAlert {
-        border-radius: 8px;
-        border-left: 4px solid;
-    }
-    
-    /* Code and pre blocks */
-    code {
-        background-color: #f1f5f9;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
-    }
-    
-    /* Loading spinner */
-    .stSpinner > div {
-        color: #7c3aed !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+/* Input field focus color change - more specific targeting */
+.stTextInput > div > div > input:focus {
+    border-color: #7A5AF8 !important;
+    box-shadow: 0 0 0 2px rgba(122, 90, 248, 0.2) !important;
+}
 
-def main():
-    """Main application function."""
-    # Page configuration
-    st.set_page_config(
-        page_title="Axis Guidelines AI",
-        page_icon="📄",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
-    
-    # Apply styling
-    apply_custom_styles()
-    
-    # Initialize application
-    app = GuidelinesAI()
-    app.initialize()
-    
-    # Render sidebar
-    app.render_sidebar()
-    
-    # Main content
-    st.title("📄 Axis Guidelines AI Assistant")
-    st.markdown("""
-    Ask questions about company guidelines and get instant, accurate answers powered by AI.
-    Our system searches through your documents to provide relevant, contextual responses.
-    """)
-    
-    # Query input
-    col1, col2 = st.columns([4, 1])
-    
-    with col1:
-        query = st.text_input(
-            "Ask a question about your guidelines:",
-            placeholder="e.g., What are the content design principles?",
-            help="Type your question and press Enter or click Get Answer",
-            key="query_input",
-            max_chars=CONFIG['MAX_QUERY_LENGTH']
-        )
-    
-    with col2:
-        st.markdown("<div style='padding-top: 28px;'>", unsafe_allow_html=True)
-        if st.button("🔍 Get Answer", type="primary", use_container_width=True):
-            if query:
-                app.process_query(query)
-        st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Process query on Enter key
-    if query and query != st.session_state.get('last_displayed_query', ''):
-        app.process_query(query)
-        st.session_state.last_displayed_query = query
-    
-    # Display history
-    app.render_history()
-    
-    # Display help
-    app.render_help()
-    
-    # Footer
+/* Alternative targeting for input focus */
+input[data-baseweb="input"]:focus {
+    border-color: #7A5AF8 !important;
+    box-shadow: 0 0 0 2px rgba(122, 90, 248, 0.2) !important;
+}
+
+/* Even more specific targeting */
+div[data-testid="stTextInput"] input:focus {
+    border-color: #7A5AF8 !important;
+    box-shadow: 0 0 0 2px rgba(122, 90, 248, 0.2) !important;
+}
+
+/* Uiverse.io Button Styles - KEEPING THE BEAUTIFUL ANIMATION! */
+.button {
+  --h-button: 48px;
+  --w-button: 102px;
+  --round: 0.75rem;
+  cursor: pointer;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transition: all 0.25s ease;
+  background: radial-gradient(
+      65.28% 65.28% at 50% 100%,
+      rgba(223, 113, 255, 0.8) 0%,
+      rgba(223, 113, 255, 0) 100%
+    ),
+    linear-gradient(0deg, #7a5af8, #7a5af8);
+  border-radius: var(--round);
+  border: none;
+  outline: none;
+  padding: 12px 18px;
+}
+.button::before,
+.button::after {
+  content: "";
+  position: absolute;
+  inset: var(--space);
+  transition: all 0.5s ease-in-out;
+  border-radius: calc(var(--round) - var(--space));
+  z-index: 0;
+}
+.button::before {
+  --space: 1px;
+  background: linear-gradient(
+    177.95deg,
+    rgba(255, 255, 255, 0.19) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+.button::after {
+  --space: 2px;
+  background: radial-gradient(
+      65.28% 65.28% at 50% 100%,
+      rgba(223, 113, 255, 0.8) 0%,
+      rgba(223, 113, 255, 0) 100%
+    ),
+    linear-gradient(0deg, #7a5af8, #7a5af8);
+}
+.button:active {
+  transform: scale(0.95);
+}
+
+.fold {
+  z-index: 1;
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 1rem;
+  width: 1rem;
+  display: inline-block;
+  transition: all 0.5s ease-in-out;
+  background: radial-gradient(
+    100% 75% at 55%,
+    rgba(223, 113, 255, 0.8) 0%,
+    rgba(223, 113, 255, 0) 100%
+  );
+  box-shadow: 0 0 3px black;
+  border-bottom-left-radius: 0.5rem;
+  border-top-right-radius: var(--round);
+}
+.fold::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 150%;
+  height: 150%;
+  transform: rotate(45deg) translateX(0%) translateY(-18px);
+  background-color: #e8e8e8;
+  pointer-events: none;
+}
+.button:hover .fold {
+  margin-top: -1rem;
+  margin-right: -1rem;
+}
+
+.points_wrapper {
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  position: absolute;
+  z-index: 1;
+}
+
+.points_wrapper .point {
+  bottom: -10px;
+  position: absolute;
+  animation: floating-points infinite ease-in-out;
+  pointer-events: none;
+  width: 2px;
+  height: 2px;
+  background-color: #fff;
+  border-radius: 9999px;
+}
+@keyframes floating-points {
+  0% {
+    transform: translateY(0);
+  }
+  85% {
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(-55px);
+    opacity: 0;
+  }
+}
+.points_wrapper .point:nth-child(1) {
+  left: 10%;
+  opacity: 1;
+  animation-duration: 2.35s;
+  animation-delay: 0.2s;
+}
+.points_wrapper .point:nth-child(2) {
+  left: 30%;
+  opacity: 0.7;
+  animation-duration: 2.5s;
+  animation-delay: 0.5s;
+}
+.points_wrapper .point:nth-child(3) {
+  left: 25%;
+  opacity: 0.8;
+  animation-duration: 2.2s;
+  animation-delay: 0.1s;
+}
+.points_wrapper .point:nth-child(4) {
+  left: 44%;
+  opacity: 0.6;
+  animation-duration: 2.05s;
+}
+.points_wrapper .point:nth-child(5) {
+  left: 50%;
+  opacity: 1;
+  animation-duration: 1.9s;
+}
+.points_wrapper .point:nth-child(6) {
+  left: 75%;
+  opacity: 0.5;
+  animation-duration: 1.5s;
+  animation-delay: 1.5s;
+}
+.points_wrapper .point:nth-child(7) {
+  left: 88%;
+  opacity: 0.9;
+  animation-duration: 2.2s;
+  animation-delay: 0.2s;
+}
+.points_wrapper .point:nth-child(8) {
+  left: 58%;
+  opacity: 0.8;
+  animation-duration: 2.25s;
+  animation-delay: 0.2s;
+}
+.points_wrapper .point:nth-child(9) {
+  left: 98%;
+  opacity: 0.6;
+  animation-duration: 2.6s;
+  animation-delay: 0.1s;
+}
+.points_wrapper .point:nth-child(10) {
+  left: 65%;
+  opacity: 1;
+  animation-duration: 2.5s;
+  animation-delay: 0.2s;
+}
+
+.inner {
+  z-index: 2;
+  gap: 6px;
+  position: relative;
+  width: 100%;
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.5;
+  transition: color 0.2s ease-in-out;
+}
+
+.inner svg.icon {
+  width: 18px;
+  height: 18px;
+  transition: fill 0.1s linear;
+}
+
+.button:focus svg.icon {
+  fill: white;
+}
+.button:hover svg.icon {
+  fill: transparent;
+  animation:
+    dasharray 1s linear forwards,
+    filled 0.1s linear forwards 0.95s;
+}
+@keyframes dasharray {
+  from {
+    stroke-dasharray: 0 0 0 0;
+  }
+  to {
+    stroke-dasharray: 68 68 0 0;
+  }
+}
+@keyframes filled {
+  to {
+    fill: white;
+  }
+}
+
+/* Headings and text */
+h1, h2, h3 {
+    color: #1f2937;
+    font-weight: 600;
+}
+.stMarkdown p {
+    color: #4b5563;
+    font-size: 16px;
+}
+
+/* Sidebar styling */
+.sidebar .sidebar-content {
+    background-color: #ffffff;
+    border-right: 1px solid #e2e8f0;
+    padding: 20px;
+}
+
+/* Full width answer container */
+.answer-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Chat history cards */
+.stMarkdown > div > div {
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 10px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* Consistent spinner spacing */
+div[data-testid="stSpinner"] {
+    margin: 20px 0;
+    text-align: center;
+    width: 100%;
+}
+
+/* Fix spacing and container issues */
+.button-container {
+    margin-bottom: 20px;
+}
+
+.answer-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 0;
+    padding: 10px;
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px 8px 0 0;
+}
+
+.answer-content {
+    padding: 20px;
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Sidebar for navigation and branding (keeping original design)
+with st.sidebar:
+    st.header("Axis Guidelines AI")
+    st.markdown("Your tool for quick answers from company guidelines.")
+    # Optional: Add a logo (upload to repo and uncomment)
+    # st.image("logo.png", width=180)
+    st.markdown("**How to use:**")
+    st.markdown("- Type a question about our guidelines.")
+    st.markdown("- Click 'Get Answer' to view results.")
+    st.markdown("- Click the 'X' to clear the input.")
+    st.markdown("**Example questions:**")
+    st.markdown("- What are the content design principles?")
+    st.markdown("- How should headings be written?")
     st.markdown("---")
+    st.markdown("**Contact**: subzero@freecharge.com")
+
+# Main content
+st.title("📄 Axis Guidelines AI Assistant")
+st.markdown("Ask about our company guidelines and get instant, accurate answers from our PDFs.")
+
+# Query input
+query = st.text_input(
+    "Ask a question about your guidelines:",
+    placeholder="e.g., What are the content design principles?",
+    help="Type your question and press Enter or click Get Answer",
+    key="query_input"
+)
+
+# The beautiful animated button (keeping original design but with proper Python logic)
+button_clicked = False
+
+# Using columns to position the button nicely
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
     st.markdown("""
-    <div style='text-align: center; color: #64748b; padding: 20px 0;'>
-        Built with ❤️ for the Axis team | Powered by Google Gemini & Streamlit
+    <div class="button-container">
+    <button type="button" class="button" onclick="
+        const input = window.parent.document.querySelector('[data-testid=\\'stTextInput\\'] input');
+        if (input && input.value.trim()) {
+            // Trigger a form submission by dispatching Enter key event
+            const event = new KeyboardEvent('keydown', {key: 'Enter', keyCode: 13, bubbles: true});
+            input.dispatchEvent(event);
+        }
+    ">
+      <span class="fold"></span>
+      <div class="points_wrapper">
+        <i class="point"></i>
+        <i class="point"></i>
+        <i class="point"></i>
+        <i class="point"></i>
+        <i class="point"></i>
+        <i class="point"></i>
+        <i class="point"></i>
+        <i class="point"></i>
+        <i class="point"></i>
+        <i class="point"></i>
+      </div>
+      <span class="inner">
+        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5">
+          <polyline points="13.18 1.37 13.18 9.64 21.45 9.64 10.82 22.63 10.82 14.36 2.55 14.36 13.18 1.37"></polyline>
+        </svg>
+        Get Answer
+      </span>
+    </button>
     </div>
     """, unsafe_allow_html=True)
 
-if __name__ == "__main__":
-    main()
+# Process the query when there's input and it's different from previous
+if query and query != st.session_state.get('last_query', ''):
+    with st.spinner("Searching guidelines..."):
+        process_query(query)
+
+# Display chat history (keeping original style)
+if st.session_state.history:
+    st.subheader("📝 Recent Questions")
+    for i, (q, a) in enumerate(reversed(st.session_state.history[-3:])):  # Show last 3, most recent first
+        with st.expander(f"Q: {q[:80]}{'...' if len(q) > 80 else ''}"):
+            st.markdown(f"**Question:** {q}")
+            st.markdown(f"**Answer:** {a}")
+
+# Separate Help section with proper spacing (keeping original)
+st.subheader("❓ Need Help?")
+with st.expander("Click here for help and tips"):
+    st.markdown("""
+    - **Updating PDFs**: Add/remove PDFs in `test_pdfs`, run `processor.py`, and push to GitHub.
+    - **Contact**: Reach out to subzero@freecharge.com for issues or new PDFs.
+    - **Tips**: Ask specific questions for best results (e.g., 'What is the tone for content design?').
+    """)
+
+# Footer
+st.markdown("---")
+st.markdown("Built with ❤️ for the Axis team | Last updated: September 2025")
