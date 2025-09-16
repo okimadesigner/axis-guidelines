@@ -13,6 +13,8 @@ if 'query' not in st.session_state:
     st.session_state.query = ""
 if 'history' not in st.session_state:
     st.session_state.history = []
+if 'last_query' not in st.session_state:
+    st.session_state.last_query = ""
 
 # Load API key from Streamlit secrets
 api_key = st.secrets["GOOGLE_API_KEY"]
@@ -40,8 +42,20 @@ st.markdown("""
     padding-bottom: 2rem;
 }
 
-/* Input field focus color change */
-.stTextInput input:focus {
+/* Input field focus color change - more specific targeting */
+.stTextInput > div > div > input:focus {
+    border-color: #7A5AF8 !important;
+    box-shadow: 0 0 0 2px rgba(122, 90, 248, 0.2) !important;
+}
+
+/* Alternative targeting for input focus */
+input[data-baseweb="input"]:focus {
+    border-color: #7A5AF8 !important;
+    box-shadow: 0 0 0 2px rgba(122, 90, 248, 0.2) !important;
+}
+
+/* Even more specific targeting */
+div[data-testid="stTextInput"] input:focus {
     border-color: #7A5AF8 !important;
     box-shadow: 0 0 0 2px rgba(122, 90, 248, 0.2) !important;
 }
@@ -286,7 +300,8 @@ h1, h2, h3 {
 
 /* Full width answer container */
 .answer-container {
-    width: 100%;
+    width: 100% !important;
+    max-width: 100% !important;
     background-color: #ffffff;
     border: 1px solid #e2e8f0;
     border-radius: 8px;
@@ -321,50 +336,65 @@ with st.sidebar:
     st.markdown("- What are the content design principles?")
     st.markdown("- How should headings be written?")
     st.markdown("---")
-    st.markdown("**Contact**: policyteam@axis.com")
+    st.markdown("**Contact**: subzero@freecharge.com")
 
 # Main content
 st.title("📄 Axis Guidelines AI Assistant")
 st.markdown("Ask about our company guidelines and get instant, accurate answers from our PDFs.")
 
-# Create a form with custom button
-with st.form(key="question_form", clear_on_submit=True):
-    query = st.text_input(
-        "Ask a question about your guidelines:",
-        placeholder="e.g., What are the content design principles?",
-        help="Type your question and press Enter or click Submit"
-    )
-    
-    # Custom button HTML
-    st.markdown("""
-    <button type="submit" class="button">
-      <span class="fold"></span>
-      <div class="points_wrapper">
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-        <i class="point"></i>
-      </div>
-      <span class="inner">
-        <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5">
-          <polyline points="13.18 1.37 13.18 9.64 21.45 9.64 10.82 22.63 10.82 14.36 2.55 14.36 13.18 1.37"></polyline>
-        </svg>
-        Get Answer
-      </span>
-    </button>
-    """, unsafe_allow_html=True)
-    
-    # Hidden submit button to handle the form submission
-    submit_button = st.form_submit_button("Submit", type="primary")
+# Query input
+query = st.text_input(
+    "Ask a question about your guidelines:",
+    placeholder="e.g., What are the content design principles?",
+    help="Type your question and press Enter or click Get Answer",
+    key="query_input"
+)
 
-# Process the query when form is submitted
-if submit_button and query:
+# Custom functional button with JavaScript
+st.markdown("""
+<script>
+function submitQuery() {
+    // Get the query input value
+    const queryInput = window.parent.document.querySelector('[data-testid="stTextInput"] input');
+    if (queryInput && queryInput.value.trim() !== '') {
+        // Trigger form submission by pressing Enter on the input
+        const event = new KeyboardEvent('keydown', {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true
+        });
+        queryInput.dispatchEvent(event);
+    }
+}
+</script>
+
+<button type="button" class="button" onclick="submitQuery()">
+  <span class="fold"></span>
+  <div class="points_wrapper">
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+    <i class="point"></i>
+  </div>
+  <span class="inner">
+    <svg class="icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5">
+      <polyline points="13.18 1.37 13.18 9.64 21.45 9.64 10.82 22.63 10.82 14.36 2.55 14.36 13.18 1.37"></polyline>
+    </svg>
+    Get Answer
+  </span>
+</button>
+""", unsafe_allow_html=True)
+
+# Process the query when there's input and it's different from previous
+if query and query != st.session_state.get('last_query', ''):
     with st.spinner("Searching guidelines..."):
         try:
             # Search for relevant chunks
@@ -377,8 +407,9 @@ if submit_button and query:
             prompt = f"Answer based ONLY on this context from our guidelines:\n\n{context}\n\nQuestion: {query}\n\nGive a clear, concise answer."
             response = model.generate_content(prompt, generation_config=genai.types.GenerationConfig(temperature=0))
             
-            # Save to history
+            # Save to history and update last query
             st.session_state.history.append((query, response.text))
+            st.session_state.last_query = query
             
             # Display results with full width container
             st.markdown('<div class="answer-container">', unsafe_allow_html=True)
@@ -411,7 +442,7 @@ st.subheader("❓ Need Help?")
 with st.expander("Click here for help and tips"):
     st.markdown("""
     - **Updating PDFs**: Add/remove PDFs in `test_pdfs`, run `processor.py`, and push to GitHub.
-    - **Contact**: Reach out to policyteam@axis.com for issues or new PDFs.
+    - **Contact**: Reach out to subzero@freecharge.com for issues or new PDFs.
     - **Tips**: Ask specific questions for best results (e.g., 'What is the tone for content design?').
     """)
 
