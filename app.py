@@ -8,6 +8,12 @@ import numpy as np
 # Set page config for a modern, wide layout
 st.set_page_config(page_title="Axis Guidelines AI", page_icon="📄", layout="wide")
 
+# Initialize session state variables FIRST
+if 'query' not in st.session_state:
+    st.session_state.query = ""
+if 'history' not in st.session_state:
+    st.session_state.history = []
+
 # Load API key from Streamlit secrets
 api_key = st.secrets["GOOGLE_API_KEY"]
 genai.configure(api_key=api_key)
@@ -172,41 +178,19 @@ with st.sidebar:
 st.title("📄 Axis Guidelines AI Assistant")
 st.markdown("Ask about our company guidelines and get instant, accurate answers from our PDFs.")
 
-# Initialize session state for query
-if 'query' not in st.session_state:
-    st.session_state.query = ""
+# Create a simple form for the query
+with st.form(key="question_form", clear_on_submit=True):
+    query = st.text_input(
+        "Ask a question about your guidelines:",
+        placeholder="e.g., What are the content design principles?",
+        help="Type your question and press Enter or click Submit"
+    )
+    submit_button = st.form_submit_button("🔍 Get Answer")
 
-# Hidden input to sync session state (avoids race condition)
-st.text_input("Hidden Query Sync", key="hidden_query", value=st.session_state.query, on_change=lambda: None)
-
-# Custom clearable input with submit button
-st.markdown("""
-<div class="input-container">
-    <input type="text" class="clearable-input" id="query-input" placeholder="e.g., What are the content design principles?" value="{0}">
-    <button class="clear-button" onclick="document.getElementById('query-input').value='';Streamlit.setComponentValue(document.getElementById('query-input').value);document.getElementById('hidden_query').dispatchEvent(new Event('change'))">✕</button>
-    <button class="custom-button" onclick="Streamlit.setComponentValue(document.getElementById('query-input').value);Streamlit.setTrigger('submit')">
-        <span class="circle1"></span>
-        <span class="circle2"></span>
-        <span class="circle3"></span>
-        <span class="circle4"></span>
-        <span class="circle5"></span>
-        <span class="text">Get Answer</span>
-    </button>
-</div>
-<script>
-document.getElementById('query-input').addEventListener('input', function(e) {
-    Streamlit.setComponentValue(e.target.value);
-    document.getElementById('hidden_query').value = e.target.value;
-    document.getElementById('hidden_query').dispatchEvent(new Event('change'));
-});
-</script>
-""".format(st.session_state.query), unsafe_allow_html=True)
-
-# Form to handle submit trigger
-with st.form(key="question_form"):
-    query = st.session_state.query
-    if st.form_submit_button("Submit", on_click=None):  # Hidden trigger
-        with st.spinner("Searching guidelines..."):
+# Process the query when form is submitted
+if submit_button and query:
+    with st.spinner("Searching guidelines..."):
+        try:
             # Search for relevant chunks
             query_emb = embed_model.encode([query])
             faiss.normalize_L2(query_emb)
@@ -220,27 +204,31 @@ with st.form(key="question_form"):
             # Save to history
             st.session_state.history.append((query, response.text))
             
-            # Clear the input
-            st.session_state.query = ""
-            
             # Display results
-            st.subheader("Answer")
+            st.subheader("✅ Answer")
             st.markdown(response.text, help="This answer is generated from your PDFs.")
             
-            st.subheader("Sources")
-            for i in I[0]:
-                st.markdown(f"• {chunks[i][:150]}...")
+            st.subheader("📚 Sources")
+            for i, chunk_idx in enumerate(I[0], 1):
+                with st.expander(f"Source {i}"):
+                    st.markdown(chunks[chunk_idx])
             
             st.markdown("---")
+            
+        except Exception as e:
+            st.error(f"An error occurred: {str(e)}")
+            st.info("Please check that your API key is configured correctly and the data files exist.")
 
 # Display chat history
-if 'history' in st.session_state and st.session_state.history:
-    st.subheader("Recent Questions")
-    for q, a in st.session_state.history[-3:]:  # Show last 3
-        st.markdown(f"**Question:** {q}\n\n**Answer:** {a}")
+if st.session_state.history:
+    st.subheader("📝 Recent Questions")
+    for i, (q, a) in enumerate(reversed(st.session_state.history[-3:])):  # Show last 3, most recent first
+        with st.expander(f"Q: {q[:80]}{'...' if len(q) > 80 else ''}"):
+            st.markdown(f"**Question:** {q}")
+            st.markdown(f"**Answer:** {a}")
 
 # Help section (collapsible)
-with st.expander("Need Help?"):
+with st.expander("❓ Need Help?"):
     st.markdown("""
     - **Updating PDFs**: Add/remove PDFs in `test_pdfs`, run `processor.py`, and push to GitHub.
     - **Contact**: Reach out to policyteam@axis.com for issues or new PDFs.
