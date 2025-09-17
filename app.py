@@ -32,7 +32,7 @@ try:
     if not api_key:
         raise ValueError("API key is empty")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.0-flash-exp')  # Gemini 2.0 Flash Experimental (latest)
 except KeyError:
     st.error("❌ GOOGLE_API_KEY not found in secrets. Please configure your API key.")
     st.stop()
@@ -552,7 +552,7 @@ if st.session_state.history:
             st.markdown(f"**Answer:** {a}")
 
 # Separate Help section with proper spacing (keeping original)
-st.subheader("❓ Need Help?")
+st.subheader("🌿 Need Help?")
 with st.expander("Click here for help and tips"):
     st.markdown("""
     - **Updating PDFs**: Add/remove PDFs in `test_pdfs`, run `processor.py`, and push to GitHub.
@@ -562,4 +562,4 @@ with st.expander("Click here for help and tips"):
 
 # Footer
 st.markdown("---")
-st.markdown("Built with ❤️ for the Axis team | Last updated: September 2025")
+st.markdown("Built with ❤️ for the Axis team using Gemini 2.0 Flash | Last updated: September 2025")
