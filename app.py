@@ -129,12 +129,16 @@ Instructions:
 - Be specific and actionable when possible"""
 
         response = model.generate_content(
-            prompt, 
+            prompt,
             generation_config=genai.types.GenerationConfig(temperature=0)
         )
 
+        # Clean response text to remove any HTML tags
+        import re
+        clean_response = re.sub(r'<[^>]+>', '', response.text)
+
         # Save to history and update last query
-        st.session_state.history.append((query, response.text))
+        st.session_state.history.append((query, clean_response))
         st.session_state.last_query = query
         
         # Manage memory
@@ -144,7 +148,7 @@ Instructions:
         st.markdown("""
         <div class="answer-container">
             <h3 style="margin: 0 0 15px 0; display: block;">✅ Answer</h3>
-            """ + response.text + """
+            """ + clean_response + """
         </div>
         """, unsafe_allow_html=True)
 
@@ -152,8 +156,6 @@ Instructions:
         for i, chunk_idx in enumerate(I[0], 1):
             with st.expander(f"Source {i}"):
                 st.markdown(chunks[chunk_idx])
-
-        st.markdown("---")
         return True
 
     except Exception as e:
@@ -537,7 +539,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Process the query when there's input and it's different from previous
-st.markdown("---")
 if query and query != st.session_state.get('last_query', ''):
     with st.spinner("Searching guidelines..."):
         process_query(query)
