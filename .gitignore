@@ -1,2 +1,6 @@
 api_key.txt
 venv/
+chunks.pkl
+index.faiss
+embeddings.npy
+pdf_metadata.json
