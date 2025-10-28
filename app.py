@@ -8,13 +8,19 @@ import logging
 import subprocess
 import sys
 from typing import List, Tuple, Optional
+from config import *
+
+# Admin configuration - CHANGE THESE TO YOUR ADMIN EMAILS
+ADMIN_EMAILS = [
+    "subzero@freecharge.com",
+    "your-second-admin@freecharge.com"  # Add more admins here
+]
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Set page config for a modern, wide layout
-st.set_page_config(page_title="Axis Guidelines AI", page_icon="📄", layout="wide")
+st.set_page_config(page_title="Axis Guidelines AI", layout="centered")
 
 # Initialize session state variables FIRST
 if 'query' not in st.session_state:
@@ -30,11 +36,12 @@ if 'processing' not in st.session_state:
 
 # Load API key from Streamlit secrets with validation
 try:
-    api_key = st.secrets["GOOGLE_API_KEY"]
+    api_key = st.secrets.get("GOOGLE_API_KEY", "").strip()
     if not api_key:
-        raise ValueError("API key is empty")
+        st.error("⚠️ GOOGLE_API_KEY not found or empty in secrets.")
+        st.stop()
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash-exp')
+    model = genai.GenerativeModel(GEMINI_MODEL)
 except KeyError:
     st.error("❌ GOOGLE_API_KEY not found in secrets. Please configure your API key.")
     st.stop()
@@ -64,7 +71,7 @@ chunks, index = load_processed_data()
 @st.cache_resource
 def load_embedding_model():
     try:
-        return SentenceTransformer('all-MiniLM-L6-v2')
+        return SentenceTransformer(EMBEDDING_MODEL)
     except Exception as e:
         st.error(f"❌ Failed to load embedding model: {str(e)}")
         st.stop()
@@ -91,28 +98,38 @@ def validate_query(query: str) -> bool:
 
 def process_query(query: str) -> bool:
     """Process user query with proper error handling."""
+
+    # Validation
     if not validate_query(query):
         return False
 
-    if query == st.session_state.last_query:
+    # Check if same query already processed
+    if query == st.session_state.get('last_query', ''):
+        st.info("This query was already processed. Check the answer above.")
         return False
 
-    if st.session_state.processing:
+    # Check if already processing
+    if st.session_state.get('processing', False):
+        st.warning("Already processing a query. Please wait...")
         return False
 
+    # Set processing flag
     st.session_state.processing = True
 
     try:
+        # Generate embedding
         if query not in st.session_state.embedding_cache:
             query_emb = embed_model.encode([query])
             st.session_state.embedding_cache[query] = query_emb[0]
         else:
             query_emb = np.array([st.session_state.embedding_cache[query]])
 
+        # Search index
         faiss.normalize_L2(query_emb)
         D, I = index.search(query_emb.astype('float32'), k=3)
         context = "\n\n".join([chunks[i] for i in I[0]])
 
+        # Generate answer
         prompt = f"""Answer based ONLY on this context from our guidelines:
 
 {context}
@@ -127,37 +144,48 @@ Instructions:
 
         response = model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(temperature=0)
+            generation_config=genai.types.GenerationConfig(temperature=0),
+            request_options={'timeout': 30}
         )
 
+        # Clean response
         import re
         clean_response = re.sub(r'<[^>]+>', '', response.text)
 
+        # Update session state
         st.session_state.history.append((query, clean_response))
         st.session_state.last_query = query
-
         manage_cache_size()
 
-        st.markdown(f"""
-        <div class="answer-container">
-            <h3 style="margin: 0 0 15px 0;">✅ Answer</h3>
-            {clean_response}
-        </div>
-        """, unsafe_allow_html=True)
+        # Success
+        logger.info(f"Successfully processed query: {query[:50]}...")
 
-        st.subheader("📚 Sources")
-        for i, chunk_idx in enumerate(I[0], 1):
-            with st.expander(f"Source {i}"):
-                st.markdown(chunks[chunk_idx])
+        # Success
+        st.session_state.processing = False
         return True
 
     except Exception as e:
-        logger.error(f"Query processing failed: {e}")
-        st.error(f"An error occurred: {str(e)}")
+        logger.error(f"Query processing failed: {e}", exc_info=True)
+        st.error(f"❌ An error occurred: {str(e)}")
         st.info("Please check that your API key is configured correctly and try again.")
-        return False
-    finally:
         st.session_state.processing = False
+        return False
+
+def system_health_check():
+    """Check system health and data integrity"""
+    checks = {
+        'chunks_file': os.path.exists(CHUNKS_FILE),
+        'index_file': os.path.exists(INDEX_FILE),
+        'embeddings_file': os.path.exists(EMBEDDINGS_FILE),
+        'pdf_folder': os.path.exists(PDF_FOLDER),
+        'api_configured': bool(st.secrets.get("GOOGLE_API_KEY"))
+    }
+
+    if all(checks.values()):
+        return True, "System healthy ✅"
+    else:
+        issues = [k for k, v in checks.items() if not v]
+        return False, f"Issues found: {', '.join(issues)}"
 
 def reprocess_pdfs():
     """Run the processor script to update the index."""
@@ -184,53 +212,78 @@ def reprocess_pdfs():
     except Exception as e:
         st.error(f"❌ Error running processor: {str(e)}")
 
-# Streamlined CSS - removed complex button animation
+# --- Custom CSS for clean, minimal UI ---
 st.markdown("""
 <style>
-.stApp {
-    background-color: #f9fafb;
-    font-family: 'Inter', sans-serif;
+/* Hide textarea label */
+.stTextArea > label { display: none !important; }
+
+/* Textarea styling */
+.stTextArea > div > div > textarea {
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 8px !important;
+    font-size: 16px !important;
+    padding: 12px !important;
 }
 
+/* Center container width */
 .block-container {
-    max-width: 100%;
-    padding-top: 2rem;
-    padding-bottom: 2rem;
+    max-width: 850px;
+    margin: 0 auto;
+    padding-left: 1rem;
+    padding-right: 1rem;
 }
 
-/* Simple, clean button styling */
-.stButton > button {
-    background: linear-gradient(135deg, #7A5AF8 0%, #9B7FFF 100%);
-    color: white;
-    border: none;
+/* Answer box */
+.answer-container {
+    width: 100% !important;
+    background-color: #ffffff;
+    border: 1px solid #e2e8f0;
     border-radius: 8px;
-    padding: 12px 24px;
-    font-size: 16px;
-    font-weight: 600;
-    transition: all 0.3s ease;
-    box-shadow: 0 4px 6px rgba(122, 90, 248, 0.3);
+    padding: 20px;
+    margin: 20px 0 0 0;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.answer-container p:last-child {
+    margin-bottom: 0 !important;
 }
 
-.stButton > button:hover {
-    background: linear-gradient(135deg, #6A4AE8 0%, #8B6FEF 100%);
-    box-shadow: 0 6px 12px rgba(122, 90, 248, 0.4);
-    transform: translateY(-2px);
+/* Prevent button text wrapping */
+.stButton button {
+    white-space: nowrap !important;
+    font-weight: 600 !important;
+    background-color: #880e4f !important; /* Axis Maroon */
+    color: white !important;
+    border-radius: 8px !important;
+    padding: 0.6rem 1.2rem !important;
+    border: none !important;
+}
+.stButton button:hover {
+    background-color: #a51764 !important;
 }
 
-.stButton > button:active {
-    transform: translateY(0px);
-    box-shadow: 0 2px 4px rgba(122, 90, 248, 0.3);
-}
-
-/* Secondary button (for reprocess) */
+/* Professional Button Styling for secondary buttons */
 .stButton > button[kind="secondary"] {
-    background: linear-gradient(135deg, #34D399 0%, #10B981 100%);
-    box-shadow: 0 4px 6px rgba(16, 185, 129, 0.3);
+  background: #10B981 !important;
 }
 
 .stButton > button[kind="secondary"]:hover {
-    background: linear-gradient(135deg, #10B981 0%, #059669 100%);
-    box-shadow: 0 6px 12px rgba(16, 185, 129, 0.4);
+  background: #059669 !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 6px 12px rgba(16, 185, 129, 0.3) !important;
+}
+
+/* Logout link styling */
+.logout-link {
+  display: block;
+  text-align: center;
+  color: #97144D;
+  font-weight: 500;
+  margin-top: 8px;
+  cursor: pointer;
+}
+.logout-link:hover {
+  text-decoration: underline;
 }
 
 h1, h2, h3 {
@@ -243,43 +296,33 @@ h1, h2, h3 {
     font-size: 16px;
 }
 
-.answer-container {
-    width: 100% !important;
-    max-width: 100% !important;
-    background-color: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 20px;
-    margin: 20px 0;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-.stMarkdown > div > div {
-    background-color: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 12px;
-    margin-bottom: 10px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-}
-
 div[data-testid="stSpinner"] {
     margin: 20px 0;
     text-align: center;
     width: 100%;
 }
+
+/* Divider line */
+hr {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 1.5rem 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
+# --- Custom Header ---
+st.title("📄 Axis Guidelines AI")
+st.markdown("*Your tool for quick answers from company guidelines.*")
+
 # Sidebar
 with st.sidebar:
-    st.header("Axis Guidelines AI")
-    st.markdown("Your tool for quick answers from company guidelines.")
+    st.header("📄 Axis Guidelines AI")
+    st.markdown("Quick answers from company guidelines.")
 
     st.markdown("**How to use:**")
     st.markdown("- Type a question about our guidelines")
     st.markdown("- Click 'Get Answer' to view results")
-    st.markdown("- Use 'Reprocess PDFs' after adding new files")
 
     st.markdown("**Example questions:**")
     st.markdown("- What are the content design principles?")
@@ -287,60 +330,76 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Reprocess button in sidebar
-    st.markdown("**📂 Update Index**")
-    if st.button("🔄 Reprocess PDFs", type="secondary", use_container_width=True):
-        reprocess_pdfs()
+    # Admin-only section for reprocessing
+    st.markdown("**🔐 Admin Panel**")
+
+    # Initialize admin session state
+    if 'admin_authenticated' not in st.session_state:
+        st.session_state.admin_authenticated = False
+
+    if not st.session_state.admin_authenticated:
+        admin_email = st.text_input(
+            "Admin Email",
+            type="default",
+            key="admin_email",
+            placeholder="your-email@freecharge.com"
+        )
+
+        if st.button("🔓 Authenticate", use_container_width=True):
+            if admin_email in ADMIN_EMAILS:
+                st.session_state.admin_authenticated = True
+                st.success("✅ Authenticated as admin!")
+                st.rerun()
+            else:
+                st.error("❌ Unauthorized. Contact admin for access.")
+    else:
+        st.success(f"✅ Admin access granted")
+
+        if st.button("🔄 Reprocess PDFs", type="secondary"):
+            reprocess_pdfs()
+
+        st.markdown('<p class="logout-link" onclick="window.location.reload()">← Logout</p>', unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("**System Status**")
+    healthy, status = system_health_check()
+    if healthy:
+        st.success(status)
+    else:
+        st.warning(status)
 
     st.markdown("---")
     st.markdown("**Contact**: subzero@freecharge.com")
 
-# Main content
-st.title("📄 Axis Guidelines AI Assistant")
-st.markdown("Ask about our company guidelines and get instant, accurate answers from our PDFs.")
+# --- Input field ---
+query = st.text_area("", placeholder="Ask your question here...")
 
-# Query input with button in columns for better layout
-col1, col2 = st.columns([4, 1])
-
+# --- Left-aligned button ---
+col1, _ = st.columns([1.5, 3.5])
 with col1:
-    query = st.text_input(
-        "Ask a question about your guidelines:",
-        placeholder="e.g., What are the content design principles?",
-        help="Type your question and press Enter or click Get Answer",
-        key="query_input",
-        label_visibility="collapsed"
-    )
+    submit = st.button("⚡ Get Answer", type="primary")
 
-with col2:
-    st.markdown("<br>", unsafe_allow_html=True)  # Align button with input
-    if st.button("⚡ Get Answer", use_container_width=True):
-        if query:
-            with st.spinner("Searching guidelines..."):
-                process_query(query)
+# --- Divider ---
+st.markdown("<hr>", unsafe_allow_html=True)
 
-# Auto-process on Enter key
-if query and query != st.session_state.get('last_query', ''):
-    with st.spinner("Searching guidelines..."):
-        process_query(query)
+# --- Answer container (Dynamic placeholder) ---
+answer_placeholder = st.empty()
 
-# Display chat history
-if st.session_state.history:
-    st.subheader("📝 Recent Questions")
-    for i, (q, a) in enumerate(reversed(st.session_state.history[-3:])):
-        with st.expander(f"Q: {q[:80]}{'...' if len(q) > 80 else ''}"):
-            st.markdown(f"**Question:** {q}")
-            st.markdown(f"**Answer:** {a}")
-
-# Help section
-st.subheader("🌿 Need Help?")
-with st.expander("Click here for help and tips"):
-    st.markdown("""
-    - **Adding PDFs**: Place PDFs in `test_pdfs` folder, then click 'Reprocess PDFs' in sidebar
-    - **Updating PDFs**: Modify existing PDFs and reprocess to update the index
-    - **Contact**: Reach out to subzero@freecharge.com for issues or new PDFs
-    - **Tips**: Ask specific questions for best results (e.g., 'What is the tone for content design?')
-    """)
-
-# Footer
-st.markdown("---")
-st.markdown("Built with ❤️ for the Axis team using Gemini 2.0 Flash | Last updated: October 2025")
+# --- When user submits ---
+if submit:
+    if not query or not query.strip():
+        st.warning("Please enter a question first.")
+    else:
+        with st.spinner("🔍 Searching guidelines..."):
+            success = process_query(query.strip())
+            if success:
+                # Get the latest answer from history
+                if st.session_state.history:
+                    query_text, answer_text = st.session_state.history[-1]
+                    # 🪄 Update inside the container dynamically
+                    answer_placeholder.markdown(f"""
+                    <div class="answer-container">
+                        <h4 style="margin-top:0;">🧠 Answer</h4>
+                        <div style="white-space: pre-wrap; font-size: 16px;">{answer_text}</div>
+                    </div>
+                    """, unsafe_allow_html=True)

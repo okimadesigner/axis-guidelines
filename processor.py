@@ -1,5 +1,8 @@
 import os
 import hashlib
+import logging
+import re
+from logging.handlers import RotatingFileHandler
 from PyPDF2 import PdfReader
 from sentence_transformers import SentenceTransformer
 import numpy as np
@@ -7,20 +10,57 @@ import faiss
 import pickle
 import json
 from datetime import datetime
+from tqdm import tqdm
 
-# Configuration
-PDF_FOLDER = 'test_pdfs'
-METADATA_FILE = 'pdf_metadata.json'
-CHUNKS_FILE = 'chunks.pkl'
-INDEX_FILE = 'index.faiss'
-EMBEDDINGS_FILE = 'embeddings.npy'  # New file for embeddings
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 100
-SIMILARITY_THRESHOLD = 0.95  # For deduplication (95% similar = duplicate)
+# Import NLTK and download required data
+import nltk
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt', quiet=True)
+
+from config import *
+
+# Configure logging
+log_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# File handler with rotation
+file_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=10*1024*1024,  # 10MB
+    backupCount=5
+)
+file_handler.setFormatter(log_formatter)
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+class ChunkMetadata:
+    """Metadata for each chunk"""
+    def __init__(self, source_file, page_num, chunk_idx):
+        self.source_file = source_file
+        self.page_num = page_num
+        self.chunk_idx = chunk_idx
+        self.created_at = datetime.now().isoformat()
 
 class IncrementalPDFProcessor:
     def __init__(self):
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.model = SentenceTransformer(EMBEDDING_MODEL)
+
+        # Pre-compile regex patterns for efficiency
+        self.text_cleaner = re.compile(
+            r'<[^>]+>|[•◦○◆◇■□▪▫]|[^\x20-\x7E\n\s]'
+        )
+        self.whitespace_normalizer = re.compile(r'\s+')
+
         self.metadata = self.load_metadata()
         self.all_chunks = []
         self.chunk_sources = []  # Track which PDF each chunk came from
@@ -45,60 +85,99 @@ class IncrementalPDFProcessor:
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
 
-    def extract_chunks_from_pdf(self, pdf_path):
-        """Extract text chunks from a single PDF"""
-        reader = PdfReader(pdf_path)
-        text = ''
-        for page in reader.pages:
-            text += page.extract_text() + '\n'
+    def _create_chunks_from_text(self, text):
+        """Create chunks from text with sentence boundary awareness"""
+        # Clean text using compiled patterns
+        text = self.text_cleaner.sub('', text)
+        text = self.whitespace_normalizer.sub(' ', text)
 
-        # Clean the extracted text to remove HTML-like artifacts and formatting
-        import re
-        # Remove HTML tags
-        text = re.sub(r'<[^>]+>', '', text)
-        # Remove multiple spaces and normalize whitespace
-        text = re.sub(r'\s+', ' ', text)
-        # Remove common PDF artifacts
-        text = re.sub(r'[•●○◆◇■□▪▫]', '', text)  # Remove bullet point symbols
-        text = re.sub(r'[^\x20-\x7E\n]', '', text)  # Keep only ASCII printable characters + newline
+        # Split into sentences
+        try:
+            sentences = nltk.sent_tokenize(text)
+        except LookupError:
+            # Fallback to simple splitting
+            sentences = re.split(r'[.!?]+', text)
 
-        # Split into overlapping chunks for better context
         chunks = []
-        for i in range(0, len(text), CHUNK_SIZE - CHUNK_OVERLAP):
-            chunk = text[i:i + CHUNK_SIZE].strip()
-            if len(chunk) > 50:  # Skip very short chunks
-                chunks.append(chunk)
+        current_chunk = ""
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+
+            # If adding sentence exceeds chunk size, save current chunk
+            if len(current_chunk) + len(sentence) > CHUNK_SIZE and current_chunk:
+                if len(current_chunk) > MIN_CHUNK_LENGTH:
+                    chunks.append(current_chunk.strip())
+                # Start new chunk with overlap
+                words = current_chunk.split()
+                overlap_words = words[-20:] if len(words) > 20 else words
+                current_chunk = ' '.join(overlap_words) + ' ' + sentence
+            else:
+                current_chunk += ' ' + sentence
+
+        # Add final chunk
+        if len(current_chunk) > MIN_CHUNK_LENGTH:
+            chunks.append(current_chunk.strip())
+
         return chunks
+
+    def extract_chunks_from_pdf(self, pdf_path):
+        """Extract text chunks from a single PDF with metadata"""
+        reader = PdfReader(pdf_path)
+        chunks_with_metadata = []
+
+        for page_num, page in enumerate(reader.pages):
+            text = page.extract_text()
+            page_chunks = self._create_chunks_from_text(text)
+
+            for chunk_idx, chunk in enumerate(page_chunks):
+                chunks_with_metadata.append({
+                    'text': chunk,
+                    'metadata': ChunkMetadata(
+                        source_file=os.path.basename(pdf_path),
+                        page_num=page_num + 1,
+                        chunk_idx=chunk_idx
+                    ).__dict__
+                })
+
+        return chunks_with_metadata
 
     def compute_similarity(self, emb1, emb2):
         """Calculate cosine similarity between two embeddings"""
         return np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
 
     def deduplicate_chunks(self, new_chunks, new_embeddings, existing_embeddings=None):
-        """Remove duplicate chunks based on semantic similarity"""
+        """Remove duplicates using FAISS for efficient similarity search"""
         if len(new_chunks) == 0:
             return [], np.array([])
+
+        if existing_embeddings is None or len(existing_embeddings) == 0:
+            return new_chunks, new_embeddings
+
+        # Use FAISS for efficient similarity search
+        dimension = existing_embeddings.shape[1]
+        temp_index = faiss.IndexFlatIP(dimension)
+
+        # Normalize embeddings
+        normalized_existing = existing_embeddings.copy()
+        faiss.normalize_L2(normalized_existing)
+        temp_index.add(normalized_existing.astype('float32'))
+
+        normalized_new = new_embeddings.copy()
+        faiss.normalize_L2(normalized_new)
+
+        # Batch search for duplicates
+        D, I = temp_index.search(normalized_new.astype('float32'), k=1)
 
         unique_chunks = []
         unique_embeddings = []
 
-        # Build combined embedding set for comparison
-        all_embeddings = list(existing_embeddings) if existing_embeddings is not None else []
-
-        for i, (chunk, embedding) in enumerate(zip(new_chunks, new_embeddings)):
-            is_duplicate = False
-
-            # Check against all previously added embeddings
-            for existing_emb in all_embeddings:
-                similarity = self.compute_similarity(embedding, existing_emb)
-                if similarity > SIMILARITY_THRESHOLD:
-                    is_duplicate = True
-                    break
-
-            if not is_duplicate:
+        for i, (chunk, embedding, similarity) in enumerate(zip(new_chunks, new_embeddings, D[:, 0])):
+            if similarity < SIMILARITY_THRESHOLD:
                 unique_chunks.append(chunk)
                 unique_embeddings.append(embedding)
-                all_embeddings.append(embedding)
 
         return unique_chunks, np.array(unique_embeddings) if unique_embeddings else np.array([])
 
@@ -120,7 +199,7 @@ class IncrementalPDFProcessor:
 
         print("Checking for new or modified PDFs...")
 
-        # Identify which PDFs need processing
+        # Identify which PDFs need processing (first collect all files)
         for pdf_file in pdf_files:
             pdf_path = os.path.join(PDF_FOLDER, pdf_file)
             file_hash = self.get_file_hash(pdf_path)
@@ -131,17 +210,31 @@ class IncrementalPDFProcessor:
                 files_to_process.append(pdf_file)
                 print(f"  - {pdf_file} (new or modified)")
 
-                # Extract chunks from this PDF
-                chunks = self.extract_chunks_from_pdf(pdf_path)
-                new_chunks.extend(chunks)
+        # Now process the files that need updating with progress bar
+        for pdf_file in tqdm(files_to_process, desc="Processing PDFs"):
+            pdf_path = os.path.join(PDF_FOLDER, pdf_file)
 
-                # Update metadata
+            try:
+                file_hash = self.get_file_hash(pdf_path)
+                file_mtime = os.path.getmtime(pdf_path)
+
+                logger.info(f"Processing: {pdf_file}")
+                chunks_with_metadata = self.extract_chunks_from_pdf(pdf_path)
+
+                # Extract just the text chunks for embedding
+                text_chunks = [chunk['text'] for chunk in chunks_with_metadata]
+                new_chunks.extend(text_chunks)
+
                 self.metadata[pdf_file] = {
                     'hash': file_hash,
                     'modified': file_mtime,
                     'processed': datetime.now().isoformat(),
-                    'chunk_count': len(chunks)
+                    'chunk_count': len(chunks_with_metadata)
                 }
+
+            except Exception as e:
+                logger.error(f"Failed to process {pdf_file}: {e}", exc_info=True)
+                continue  # Skip failed PDFs, don't crash entire process
 
         # Check for deleted PDFs
         deleted_files = set(self.metadata.keys()) - set(pdf_files)
@@ -222,6 +315,4 @@ if __name__ == "__main__":
     # Process PDFs (only new/modified ones)
     processor.process_pdfs()
 
-    # Quick test search
-    print("\n" + "=" * 80)
-    processor.test_search("What are the content design principles?", k=3)
+    print("\n✓ Processor completed successfully!")
