@@ -1,6 +1,11 @@
 api_key.txt
 venv/
-chunks.pkl
-index.faiss
-embeddings.npy
-pdf_metadata.json
+# Temporarily uncomment these for Streamlit Cloud deployment
+# chunks.pkl
+# index.faiss
+# embeddings.npy
+# pdf_metadata.json
+*.pyc
+__pycache__/
+node_modules/
+.DS_Store
