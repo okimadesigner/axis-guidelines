@@ -19,7 +19,7 @@ MIN_CHUNK_LENGTH = 50
 
 # Model settings
 EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
-GEMINI_MODEL = 'gemini-2.0-flash-exp'
+GEMINI_MODEL = 'gemini-2.5-flash-lite'
 GEMINI_TEMPERATURE = 0
 
 # Performance settings
